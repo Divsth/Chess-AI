@@ -11,3 +11,6 @@ Run main.py to play against the AI with the pre-downloaded model
 
 
 If you would like to train a model, download the lichess database; then run process_data.py and neural_network_trainer.py before running main.py
+
+
+(Originally Made 02/2024)
