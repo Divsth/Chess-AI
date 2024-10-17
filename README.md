@@ -5,6 +5,7 @@ Uses PyTorch to train and run a CNN Model. Trained via lichess data base: https:
 Instructions: 
 
 Download all libraries
+
 Run main.py to play against the AI with the pre-downloaded model
 
 
