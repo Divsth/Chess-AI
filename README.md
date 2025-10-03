@@ -1,16 +1,32 @@
 # Chess-AI
 
-Uses PyTorch to train and run a CNN Model. Trained via lichess data base: https://database.lichess.org/#evals
+Uses PyTorch to train and run a CNN Model. Trained via lichess.org database: https://database.lichess.org/#evals
 
-Instructions: 
+Instructions to Play Against Predownloaded Model: 
 
-Download all libraries
+1. Download the latest release of Python
+2. Run the following commands in a terminal:
+   ```
+      pip install pygame
+      pip install torch torchvision torchaudio
+   ```
+4. Download and extract the GitHub files
+5. Navigate to the extracted folder and run
+   ```py main.py```
+6. Enjoy!
 
-Run main.py to play against the AI with the pre-downloaded model
 
+Instructions to Train Model
 
-
-If you would like to train a model, download the lichess database; then run process_data.py and neural_network_trainer.py before running main.py
+1. Download the lichess.org database (https://database.lichess.org/#evals) and fully extract
+2. Download and extract the GitHub files, remove the existing chess_model.pth from the folder.
+3. Navigate to the extracted folder and paste the extracted lichess.org database
+4. In the same directory, run
+       ```
+       py process_data.py
+       py neural_network_trainer.py
+       ```
+5. You can now use the newly trained model to play against
 
 
 (Originally Made 02/2024)
