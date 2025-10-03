@@ -2,7 +2,7 @@
 
 Uses PyTorch to train and run a CNN Model. Trained via lichess.org database: https://database.lichess.org/#evals
 
-Instructions to Play Against Predownloaded Model: 
+## Instructions to Play Against Predownloaded Model: 
 
 1. Download the latest release of Python
 2. Run the following commands in a terminal:
@@ -16,7 +16,7 @@ Instructions to Play Against Predownloaded Model:
 6. Enjoy!
 
 
-Instructions to Train Model
+## Instructions to Train Model:
 
 1. Download the lichess.org database (https://database.lichess.org/#evals) and fully extract
 2. Download and extract the GitHub files, remove the existing chess_model.pth from the folder.
