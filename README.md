@@ -28,5 +28,5 @@ Uses PyTorch to train and run a CNN Model. Trained via lichess.org database: htt
        py process_data.py
        py neural_network_trainer.py
     ```
-5. You can now use the newly trained model to play against! If you to change the amount of training data used, you can change MAX_INPUT_LINES and TOTAL_OUTPUT_POSITIONS in process_data.py to extract more data and change TRAINING_LINE_LIMIT in neural_network_trainer.py to utilize more data. For a strong model, use the full data and train for several hours.
+5. You can now use the newly trained model to play against! If you to change the amount of training data used, you can change MAX_INPUT_LINES and TOTAL_OUTPUT_POSITIONS in process_data.py to extract more data. Then change TRAINING_LINE_LIMIT in neural_network_trainer.py to utilize more data in training. For a strong model, use the full data and train for several hours.
 
