@@ -2,6 +2,8 @@
 
 Uses PyTorch to train and run a CNN Model. Trained via lichess.org database: https://database.lichess.org/#evals
 
+<img src="pieces-basic-png/sample_image.png" alt="sample_image.png" width="500"/>
+
 ## Instructions to Play Against Pre-downloaded Model: 
 
 1. Download the latest release of Python
