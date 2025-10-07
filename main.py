@@ -1,613 +1,473 @@
-# Import required libraries
-import pygame  # For creating the game window and handling graphics
-import torch   # For neural network operations
-import copy    # For creating deep copies of game states
-import time    # For controlling AI move timing
-import random  # For fallback random moves
-from neural_network_trainer import ChessEvaluator  # Custom neural network for chess position evaluation
+import pygame
+import torch
+import copy
+import time
+import random
+from neural_network_trainer import ChessEvaluator
 
-# Initialize pygame for graphics rendering
 pygame.init()
 
-# Define color constants using RGB values
+# --- UI and Display Constants ---
 WHITE = (255, 255, 255)
-OFF_WHITE = (200, 200, 200)
-BLACK = (0, 0, 0)
 GRAY = (128, 128, 128)
+BLACK = (0, 0, 0)
 RED = (255, 0, 0)
-GREEN = (0, 255, 0)
-BLUE = (0, 0, 255)
+GREEN = (0, 200, 0)
+BLUE = (100, 150, 255)
+YELLOW = (255, 215, 0)
+WINDOW_WIDTH = 700
+BOARD_SIZE = 8
+SQUARE_SIZE = WINDOW_WIDTH // BOARD_SIZE
+STATUS_HEIGHT = 100
+WINDOW_HEIGHT = WINDOW_WIDTH + STATUS_HEIGHT
 
-# Game window and board configuration
-WINDOW_WIDTH = 800
-BOARD_SIZE = 8  # Standard 8x8 chess board
-SQUARE_SIZE = WINDOW_WIDTH // BOARD_SIZE  # Size of each square on the board
-WINDOW_HEIGHT = 800 + SQUARE_SIZE  # Additional space for status display
-
-# Chess piece definitions
-PIECES = ["King", "Queen", "Rook", "Bishop", "Knight", "Pawn"]
-SYMBOLS = ["K", "Q", "R", "B", "N", "P"]  # Standard chess notation symbols
-
-# Initial chess board layout using algebraic notation
-# Uppercase letters represent white pieces, lowercase represent black pieces
-# None represents empty squares
+# --- Game Logic Constants ---
 BOARD_LAYOUT = [
-    ["r", "n", "b", "q", "k", "b", "n", "r"],  # Black back rank
-    ["p", "p", "p", "p", "p", "p", "p", "p"],  # Black pawns
-    [None] * 8,  # Empty ranks
-    [None] * 8,
-    [None] * 8,
-    [None] * 8,
-    ["P", "P", "P", "P", "P", "P", "P", "P"],  # White pawns
-    ["R", "N", "B", "Q", "K", "B", "N", "R"]   # White back rank
+    ["r", "n", "b", "q", "k", "b", "n", "r"],
+    ["p", "p", "p", "p", "p", "p", "p", "p"],
+    [None] * 8, [None] * 8, [None] * 8, [None] * 8,
+    ["P", "P", "P", "P", "P", "P", "P", "P"],
+    ["R", "N", "B", "Q", "K", "B", "N", "R"]
 ]
 
-# Initialize pygame window and game settings
+# --- Pygame Setup ---
 window = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 pygame.display.set_caption("AI Chess")
 clock = pygame.time.Clock()
-font = pygame.font.SysFont("Arial", 32)
+font = pygame.font.SysFont("Arial", 20, bold=True)
+small_font = pygame.font.SysFont("Arial", 16)
+
+# --- Asset Loading ---
+piece_images = {}
+def load_piece_images():
+    """
+    Loads piece images from the 'pieces-basic-png' folder.
+    Chess piece icons downloaded from http://greenchess.net/pieces.html
+    """
+    pieces = ['king', 'queen', 'rook', 'bishop', 'knight', 'pawn']
+    colors = ['white', 'black']
+    for color in colors:
+        for piece in pieces:
+            try:
+                filename = f"pieces-basic-png/{color}-{piece}.png"
+                image = pygame.image.load(filename)
+                image = pygame.transform.smoothscale(image, (int(SQUARE_SIZE * 0.8), int(SQUARE_SIZE * 0.8)))
+                piece_images[f"{color}-{piece}"] = image
+            except pygame.error:
+                piece_images[f"{color}-{piece}"] = None
+    print(f"Loaded {len([v for v in piece_images.values() if v is not None])} piece images.")
+
+load_piece_images()
 
 def load_model(filepath='chess_model.pth'):
-    """
-    Load a pre-trained neural network model for chess position evaluation.
-    
-    Args:
-        filepath (str): Path to the saved model file
-        
-    Returns:
-        ChessEvaluator: Loaded neural network model in evaluation mode
-    """
+    """Loads the trained PyTorch model from the specified file."""
     model = ChessEvaluator()
-    model.load_state_dict(torch.load(filepath))
-    model.eval()  # Set model to evaluation mode
+    try:
+        state_dict = torch.load(filepath, map_location=torch.device('cpu'))
+        if 'model_state_dict' in state_dict:
+            model.load_state_dict(state_dict['model_state_dict'])
+        else:
+            model.load_state_dict(state_dict)
+        print(f"Model loaded successfully from {filepath}")
+    except FileNotFoundError:
+        print(f"Error: Model file not found at {filepath}. The AI will use material evaluation only.")
+        return None
+    except Exception as e:
+        print(f"An error occurred while loading the model: {e}")
+        return None
+    model.eval()
     return model
 
 class Square:
-    """
-    Represents a single square on the chess board.
-    
-    Attributes:
-        x (int): X-coordinate on the board (0-7)
-        y (int): Y-coordinate on the board (0-7)
-        color (tuple): RGB color value for the square
-    """
     def __init__(self, x, y, color):
-        self.x = x
-        self.y = y
-        self.color = color
-
+        self.x, self.y, self.color = x, y, color
     def draw(self):
-        """Draw the square on the game window"""
-        pygame.draw.rect(window, self.color, 
-                        (self.x * SQUARE_SIZE, self.y * SQUARE_SIZE, 
-                         SQUARE_SIZE, SQUARE_SIZE))
+        pygame.draw.rect(window, self.color, (self.x * SQUARE_SIZE, self.y * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
 
 class Piece:
-    """
-    Represents a chess piece.
-    
-    Attributes:
-        x (int): X-coordinate on the board (0-7)
-        y (int): Y-coordinate on the board (0-7)
-        color (str): Color of the piece ("white" or "black")
-        type (str): Type of piece (K, Q, R, B, N, P)
-    """
     def __init__(self, x, y, color, type):
-        self.x = x
-        self.y = y
-        self.color = color
-        self.type = type
-
+        self.x, self.y, self.color, self.type = x, y, color, type
+        
     def draw(self):
-        """Draw the piece on the game window using text representation"""
-        text_color = OFF_WHITE if self.color == "white" else BLACK
-        window.blit(font.render(self.type, True, text_color), 
-                   (self.x * SQUARE_SIZE, self.y * SQUARE_SIZE))
+        piece_name_map = {'K': 'king', 'Q': 'queen', 'R': 'rook', 'B': 'bishop', 'N': 'knight', 'P': 'pawn'}
+        piece_name = piece_name_map.get(self.type, 'pawn')
+        image = piece_images.get(f"{self.color}-{piece_name}")
+        
+        if image:
+            rect = image.get_rect(center=(self.x * SQUARE_SIZE + SQUARE_SIZE // 2, self.y * SQUARE_SIZE + SQUARE_SIZE // 2))
+            window.blit(image, rect)
+        else: # Fallback to text rendering if images are missing
+            text_color = (200, 200, 200) if self.color == "white" else BLACK
+            text = pygame.font.SysFont("Arial", 32).render(self.type, True, text_color)
+            rect = text.get_rect(center=(self.x * SQUARE_SIZE + SQUARE_SIZE // 2, self.y * SQUARE_SIZE + SQUARE_SIZE // 2))
+            window.blit(text, rect)
 
 class Board:
-    """
-    Represents the chess board and manages game state.
-    
-    Attributes:
-        squares (list): 2D list of Square objects
-        pieces (list): 2D list of Piece objects
-        turn (str): Current player's turn ("white" or "black")
-        selected_square (Square): Currently selected square
-        selected_piece (Piece): Currently selected piece
-        state (str): Current game state ("running" or victory message)
-    """
     def __init__(self):
-        # Initialize board squares with alternating colors
-        self.squares = [[Square(j, i, (WHITE if (i + j) % 2 == 0 else GRAY)) 
-                        for j in range(BOARD_SIZE)] for i in range(BOARD_SIZE)]
-        
-        # Initialize pieces according to starting position
+        self.squares = [[Square(j, i, (WHITE if (i + j) % 2 == 0 else GRAY)) for j in range(BOARD_SIZE)] for i in range(BOARD_SIZE)]
         self.pieces = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
-        for i in range(BOARD_SIZE):
-            for j in range(BOARD_SIZE):
-                if BOARD_LAYOUT[i][j]:
-                    self.pieces[i][j] = Piece(j, i,
-                                            "white" if BOARD_LAYOUT[i][j].isupper() else "black",
-                                            BOARD_LAYOUT[i][j].upper())
-
+        for i, row in enumerate(BOARD_LAYOUT):
+            for j, piece_char in enumerate(row):
+                if piece_char:
+                    color = "white" if piece_char.isupper() else "black"
+                    self.pieces[i][j] = Piece(j, i, color, piece_char.upper())
         self.turn = "white"
-        self.selected_square = None
         self.selected_piece = None
         self.mouse_last_down = False
         self.state = "running"
 
     def draw(self):
-        """Draw the complete board state including squares, pieces, and game status"""
-        # Draw board squares
         for row in self.squares:
             for square in row:
                 square.draw()
-
-        # Draw pieces
+        if self.selected_piece:
+            pygame.draw.rect(window, RED, (self.selected_piece.x * SQUARE_SIZE, self.selected_piece.y * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE), 5)
         for row in self.pieces:
             for piece in row:
                 if piece:
                     piece.draw()
 
-        # Draw turn indicator at the bottom
-        pygame.draw.rect(window, WHITE, 
-                        (0, WINDOW_HEIGHT - SQUARE_SIZE, WINDOW_WIDTH, SQUARE_SIZE))
-        window.blit(font.render(f"{self.turn.capitalize()}'s turn", True, BLACK),
-                   (SQUARE_SIZE, WINDOW_HEIGHT - SQUARE_SIZE))
+    def handle_click(self, pos):
+        """Handles the logic for selecting and moving pieces."""
+        col, row = pos[0] // SQUARE_SIZE, pos[1] // SQUARE_SIZE
+        if not (0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE):
+            return
 
-        # Draw game state if game is over
-        if self.state != "running":
-            window.blit(font.render(f"{self.state}", True, RED),
-                       (WINDOW_WIDTH // 2, WINDOW_HEIGHT - SQUARE_SIZE))
+        square = self.squares[row][col]
+        piece = self.pieces[row][col]
 
-        # Highlight selected square
-        if self.selected_square:
-            pygame.draw.rect(window, RED,
-                           (self.selected_square.x * SQUARE_SIZE,
-                            self.selected_square.y * SQUARE_SIZE,
-                            SQUARE_SIZE, SQUARE_SIZE), 5)
+        if self.selected_piece:
+            if self.is_valid_move(self.selected_piece, square):
+                self.move_piece(self.selected_piece, square)
+                if self.is_game_over(): self.state = f"{self.turn.capitalize()} wins!"
+                else: self.switch_turn()
+            self.selected_piece = None
+        elif piece and piece.color == self.turn:
+            self.selected_piece = piece
 
     def update(self):
-        """
-        Handle user input and update game state.
-        Manages piece selection and movement based on mouse input.
-        """
-        mouse_x, mouse_y = pygame.mouse.get_pos()
-        mouse_pressed = pygame.mouse.get_pressed()
-
-        # Handle mouse click events
-        if mouse_pressed[0]:
-            self.mouse_last_down = True
-
-        if not mouse_pressed[0] and self.mouse_last_down:
-            self.mouse_last_down = False
-
-            # Convert mouse position to board coordinates
-            col = mouse_x // SQUARE_SIZE
-            row = mouse_y // SQUARE_SIZE
-
-            # Ensure click is within board boundaries
-            if 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE:
-                square = self.squares[row][col]
-                piece = self.pieces[row][col]
-
-                # Handle piece selection and movement
-                if square == self.selected_square:
-                    # Deselect if clicking same square
-                    self.selected_square = None
-                    self.selected_piece = None
-                else:
-                    if piece is not None and piece.color == self.turn:
-                        # Select piece if it belongs to current player
-                        self.selected_square = square
-                        self.selected_piece = piece
-                    elif self.selected_piece is not None:
-                        # Attempt to move selected piece
-                        if self.is_valid_move(self.selected_piece, square):
-                            self.move_piece(self.selected_piece, square)
-                            
-                            # Check for game over
-                            if self.is_game_over():
-                                self.state = f"{self.turn.capitalize()} wins!"
-                            else:
-                                self.switch_turn()
-
-                            self.selected_square = None
-                            self.selected_piece = None
+        if self.turn == "white" and self.state == "running":
+            mouse_pressed = pygame.mouse.get_pressed()[0]
+            if mouse_pressed:
+                self.mouse_last_down = True
+            elif self.mouse_last_down:
+                self.mouse_last_down = False
+                self.handle_click(pygame.mouse.get_pos())
 
     def is_valid_move(self, piece, square):
-        """
-        Check if a proposed move is valid according to chess rules.
-        
-        Args:
-            piece (Piece): The piece to move
-            square (Square): The destination square
-            
-        Returns:
-            bool: True if the move is valid, False otherwise
-        """
-        # Get the piece type and color
-        piece_type = piece.type
-        piece_color = piece.color
+        target_piece = self.pieces[square.y][square.x]
+        if (piece.x, piece.y) == (square.x, square.y): return False
+        if target_piece and target_piece.color == piece.color: return False
 
-        # Get the piece and square coordinates
-        piece_x = piece.x
-        piece_y = piece.y
-        square_x = square.x
-        square_y = square.y
-
-        # Get the relative coordinates
-        dx = square_x - piece_x
-        dy = square_y - piece_y
-
-        target_piece = self.pieces[square_y][square_x]  # Get the piece on the target square
-
-        #Make sure the piece isn't moving to the same square
-        if dx == 0 and dy == 0:
-            return False
-
-        # Check the piece type
-        if piece_type == "P": # Pawn
-            # Check the piece color
-            if piece_color == "black":
-                # Check if the pawn moves one square forward
-                if dx == 0 and dy == 1 and self.pieces[square_y][square_x] is None:
-                    return True
-                # Check if the pawn moves two squares forward from the initial position
-                if dx == 0 and dy == 2 and piece_y == 1 and self.pieces[square_y][square_x] is None and self.pieces[square_y-1][square_x] is None:
-                    return True
-                # Check if the pawn captures a black piece diagonally
-                if abs(dx) == 1 and dy == 1 and self.pieces[square_y][square_x] is not None and self.pieces[square_y][square_x].color == "white":
-                    return True
-            else: # White
-                # Check if the pawn moves one square forward
-                if dx == 0 and dy == -1 and self.pieces[square_y][square_x] is None:
-                    return True
-                # Check if the pawn moves two squares forward from the initial position
-                if dx == 0 and dy == -2 and piece_y == 6 and self.pieces[square_y][square_x] is None and self.pieces[square_y+1][square_x] is None:
-                    return True
-                # Check if the pawn captures a white piece diagonally
-                if abs(dx) == 1 and dy == -1 and self.pieces[square_y][square_x] is not None and self.pieces[square_y][square_x].color == "black":
-                    return True
-        elif piece_type == "R": # Rook
-            # Check if the rook moves horizontally or vertically
-            if dx == 0 or dy == 0:
-                # Check if there is no piece in the way
-                if self.is_clear_path(piece, square):
-                    if target_piece is None or target_piece.color != piece.color:
-                        return True
-        elif piece_type == "B": # Bishop
-            # Check if the bishop moves diagonally
-            if abs(dx) == abs(dy):
-                # Check if there is no piece in the way
-                if self.is_clear_path(piece, square):
-                    if target_piece is None or target_piece.color != piece.color:
-                        return True
-        elif piece_type == "N": # Knight
-            # Check if the knight moves in an L-shape
-            if ((abs(dx) == 1 and abs(dy) == 2) or (abs(dx) == 2 and abs(dy) == 1)) and (target_piece is None or target_piece.color != piece.color):
-                return True
-        elif piece_type == "Q": # Queen
-            # Check if the queen moves horizontally, vertically, or diagonally
-            if dx == 0 or dy == 0 or abs(dx) == abs(dy):
-                # Check if there is no piece in the way
-                if self.is_clear_path(piece, square):
-                    if target_piece is None or target_piece.color != piece.color:
-                        return True
-        elif piece_type == "K":  # King
-            # Check if the king moves one square in any direction
-            if abs(dx) <= 1 and abs(dy) <= 1:
-                # Ensure the destination is either empty or contains an opponent's piece
-                if target_piece is None or target_piece.color != piece.color:
-                    return True
-                
-
-        # If none of the conditions are met, the move is invalid
+        dx, dy = square.x - piece.x, square.y - piece.y
+        if piece.type == "P":
+            direction = -1 if piece.color == "white" else 1
+            start_row = 6 if piece.color == "white" else 1
+            # Standard one-square move
+            if dx == 0 and dy == direction and not target_piece: return True
+            # Two-square move from start
+            if dx == 0 and dy == 2 * direction and piece.y == start_row and not target_piece and not self.pieces[square.y - direction][square.x]: return True
+            # Capture move
+            if abs(dx) == 1 and dy == direction and target_piece and target_piece.color != piece.color: return True
+        elif piece.type == "R":
+            if (dx == 0 or dy == 0) and self.is_clear_path(piece, square): return True
+        elif piece.type == "B":
+            if abs(dx) == abs(dy) and self.is_clear_path(piece, square): return True
+        elif piece.type == "N":
+            if (abs(dx) == 1 and abs(dy) == 2) or (abs(dx) == 2 and abs(dy) == 1): return True
+        elif piece.type == "Q":
+            if (dx == 0 or dy == 0 or abs(dx) == abs(dy)) and self.is_clear_path(piece, square): return True
+        elif piece.type == "K":
+            if abs(dx) <= 1 and abs(dy) <= 1: return True
         return False
+
     def is_clear_path(self, piece, square):
-        """
-        Check if there are any pieces blocking the path between the start and end position.
-        Used for pieces that move in straight lines (Rook, Bishop, Queen).
-        
-        Args:
-            piece (Piece): The piece being moved
-            square (Square): The destination square
-            
-        Returns:
-            bool: True if path is clear, False if blocked
-        """
-        piece_x = piece.x
-        piece_y = piece.y
-        square_x = square.x
-        square_y = square.y
-
-        # Calculate the direction of movement
-        dx = square_x - piece_x
-        dy = square_y - piece_y
-      
-        # Determine the direction vector (-1, 0, or 1 for each component)
-        x_dir = (1 if dx > 0 else (-1 if dx < 0 else 0))
-        y_dir = (1 if dy > 0 else (-1 if dy < 0 else 0))
-
-        # Check each square along the path (excluding start and end points)
+        dx, dy = square.x - piece.x, square.y - piece.y
+        x_dir = 1 if dx > 0 else -1 if dx < 0 else 0
+        y_dir = 1 if dy > 0 else -1 if dy < 0 else 0
         for i in range(1, max(abs(dx), abs(dy))):
-            x = piece_x + i * x_dir
-            y = piece_y + i * y_dir
-
-            # If any square contains a piece, the path is blocked
-            if self.pieces[y][x] is not None:
-                return False
-            
+            x, y = piece.x + i * x_dir, piece.y + i * y_dir
+            if self.pieces[y][x]: return False
         return True
 
     def move_piece(self, piece, square):
-        """
-        Move a piece to a new square on the board.
-        Updates the board state to reflect the move.
-        
-        Args:
-            piece (Piece): The piece to move
-            square (Square): The destination square
-        """
-        print(f"Moving piece {piece.type} to square {square.x}, {square.y}")
-            
-        # Clear the piece's current position
         self.pieces[piece.y][piece.x] = None
-        # Place the piece in its new position
         self.pieces[square.y][square.x] = piece
+        piece.x, piece.y = square.x, square.y
         
-        # Update the piece's coordinates
-        piece.x = square.x
-        piece.y = square.y
+        # Pawn promotion to Queen
+        if piece.type == "P" and (piece.y == 0 or piece.y == 7):
+            piece.type = "Q"
 
     def switch_turn(self):
-        """Switch the active player between white and black"""
         self.turn = "black" if self.turn == "white" else "white"
 
     def is_game_over(self):
-        """
-        Check if the game has ended.
-        Currently only checks for king capture (simplified chess rules).
-        
-        Returns:
-            bool: True if game is over, False otherwise
-        """
-        # Search for the opponent's king
-        for i in range(BOARD_SIZE):
-            for j in range(BOARD_SIZE):
-                piece = self.pieces[i][j]
-                # If we find the opponent's king, the game isn't over
-                if piece is not None and piece.type == "K" and piece.color != self.turn:
-                    return False
-        # If we didn't find the opponent's king, the game is over
-        return True
+        kings = [p for row in self.pieces for p in row if p and p.type == "K"]
+        return len(kings) < 2
 
 class AIChessGame:
-    """
-    Main game class that integrates the chess board with AI opponent.
-    Manages game state and AI move generation.
-    """
     def __init__(self):
         self.board = Board()
-        self.model = load_model()  # Load the neural network model
-        self.thinking = False  # Flag for when AI is calculating
-        self.move_time_limit = 2.0  # Maximum time (seconds) for AI to think
-        self.search_depth = 2  # How many moves ahead to look
+        self.model = load_model()
+        self.thinking = False
+        self.search_depth = 2
+        self.nn_weight = 0.5 # 0.0 = pure material, 1.0 = pure neural net
+        self.nodes_evaluated = 0
+        self.last_move = "Game started"
+        self.last_eval = 0.0
+        self.last_material = 0.0
+        self.last_nn_eval = 0.0
+        self.last_think_time = 0.0
+        self.create_ui_buttons()
+    
+    def create_ui_buttons(self):
+        """Creates clickable UI buttons for controlling AI parameters."""
+        y_offset = WINDOW_WIDTH + 35
+        self.depth_buttons = []
+        for i in range(1, 4):
+            self.depth_buttons.append({'rect': pygame.Rect(70 + (i-1)*45, y_offset, 40, 30), 'value': i, 'label': str(i)})
+        
+        self.nn_buttons = []
+        weights = [0.0, 0.25, 0.5, 0.75, 1.0]
+        labels = ["0%", "25%", "50%", "75%", "100%"]
+        # Position buttons for the longer "Neural Network Weight" label
+        start_x = 400 
+        for i, (weight, label) in enumerate(zip(weights, labels)):
+            self.nn_buttons.append({'rect': pygame.Rect(start_x + i * 45, y_offset, 40, 30), 'value': weight, 'label': label})
 
-    def print_all_legal_moves(self, color):
-        """
-        Debug function to print all legal moves for a given color.
-        
-        Args:
-            color (str): The color to check ("white" or "black")
-        """
-        all_moves = self.get_all_moves(color)
-        print(f"\nLegal moves for {color}:")
-        for piece, square in all_moves:
-            print(f"{piece.type} at ({piece.x}, {piece.y}) can move to ({square.x}, {square.y})")
-        
-    def get_board_tensor(self):
-        """
-        Convert the current board state to a tensor representation for neural network input.
-        Pieces are represented by signed integers:
-        - Positive for black pieces, negative for white
-        - Magnitude indicates piece type (1=pawn, 2=knight, etc.)
-        
-        Returns:
-            torch.Tensor: 8x8 tensor representing the board state
-        """
+    def get_material_value(self, piece_type):
+        return {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 0}.get(piece_type, 0)
+
+    def calculate_material(self, board_state):
+        """Calculates material balance from the current player's perspective."""
+        score = 0
+        for row in board_state.pieces:
+            for piece in row:
+                if piece:
+                    value = self.get_material_value(piece.type)
+                    score += value if piece.color == board_state.turn else -value
+        return score
+
+    def get_board_tensor(self, board_state):
         board_tensor = torch.zeros((8, 8))
-        for i in range(BOARD_SIZE):
-            for j in range(BOARD_SIZE):
-                piece = self.board.pieces[i][j]
-                if piece is not None:
-                    # Determine piece value based on color and type
-                    value = 1 if piece.color == "black" else -1
-                    # Multiply by piece type weight
-                    if piece.type == "P": value *= 1
-                    elif piece.type == "N": value *= 2
-                    elif piece.type == "B": value *= 3
-                    elif piece.type == "R": value *= 4
-                    elif piece.type == "Q": value *= 5
-                    elif piece.type == "K": value *= 6
-                    board_tensor[i][j] = value
+        piece_map = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6}
+        for r, row in enumerate(board_state.pieces):
+            for c, piece in enumerate(row):
+                if piece:
+                    value = 1 if piece.color == "white" else -1
+                    board_tensor[r][c] = value * piece_map.get(piece.type, 0)
         return board_tensor
 
-    def evaluate_position(self):
+    def evaluate_position(self, board_state):
         """
-        Use the neural network to evaluate the current board position.
+        Evaluates a position using a weighted combination of the neural network and material count.
+        Returns a tuple: (combined_eval, nn_eval, material_eval).
+        """
+        kings = {"white": False, "black": False}
+        for row in board_state.pieces:
+            for piece in row:
+                if piece and piece.type == "K":
+                    kings[piece.color] = True
         
-        Returns:
-            float: Position evaluation score (positive favors black, negative favors white)
-        """
-        board_tensor = self.get_board_tensor()
-        # Add batch and channel dimensions required by the model
-        board_input = board_tensor.unsqueeze(0).unsqueeze(0)
-        with torch.no_grad():  # No need to compute gradients for inference
-            evaluation = self.model(board_input).item()
-        return evaluation
+        if not kings["white"]: return (-99999, -99999, -99999) if board_state.turn == "white" else (99999, 99999, 99999)
+        if not kings["black"]: return (99999, 99999, 99999) if board_state.turn == "white" else (-99999, -99999, -99999)
+        
+        material_eval = self.calculate_material(board_state)
+        
+        if self.model is None:
+            return (material_eval, 0, material_eval)
+        
+        board_tensor = self.get_board_tensor(board_state)
+        if board_state.turn == 'black':
+            board_tensor = torch.flip(board_tensor, [0]) * -1
 
-    def get_all_moves(self, color):
-        """
-        Generate all legal moves for a given color.
+        with torch.no_grad():
+            nn_eval = self.model(board_tensor.unsqueeze(0).unsqueeze(0)).item()
         
-        Args:
-            color (str): The color to generate moves for ("white" or "black")
-            
-        Returns:
-            list: List of tuples (piece, square) representing legal moves
-        """
+        final_eval = (1 - self.nn_weight) * material_eval + self.nn_weight * nn_eval
+        return final_eval, nn_eval, material_eval
+
+    def get_all_moves(self, color, board_state):
         moves = []
-        for i in range(BOARD_SIZE):
-            for j in range(BOARD_SIZE):
-                piece = self.board.pieces[i][j]
-                if piece is not None and piece.color == color:
-                    # Check all possible destination squares
-                    for x in range(BOARD_SIZE):
-                        for y in range(BOARD_SIZE):
-                            if self.board.is_valid_move(piece, self.board.squares[y][x]):
-                                moves.append((piece, self.board.squares[y][x]))
+        for r, row in enumerate(board_state.pieces):
+            for c, piece in enumerate(row):
+                if piece and piece.color == color:
+                    for sq_row in board_state.squares:
+                        for square in sq_row:
+                            if board_state.is_valid_move(piece, square):
+                                moves.append((piece, square))
         return moves
 
+    def minimax(self, board_state, depth, is_maximizing_player):
+        self.nodes_evaluated += 1
+        if depth == 0 or board_state.is_game_over():
+            return self.evaluate_position(board_state)[0]
+        
+        moves = self.get_all_moves(board_state.turn, board_state)
+        if not moves: # Stalemate or checkmate
+            return self.evaluate_position(board_state)[0]
+        
+        if is_maximizing_player:
+            max_eval = float('-inf')
+            for piece, square in moves:
+                temp_board = copy.deepcopy(board_state)
+                # King capture is an instant win, prioritize it.
+                if temp_board.pieces[square.y][square.x] and temp_board.pieces[square.y][square.x].type == 'K':
+                    return 99999
+                temp_board.move_piece(temp_board.pieces[piece.y][piece.x], temp_board.squares[square.y][square.x])
+                temp_board.switch_turn()
+                eval_score = self.minimax(temp_board, depth - 1, False)
+                max_eval = max(max_eval, eval_score)
+            return max_eval
+        else: # Minimizing player
+            min_eval = float('inf')
+            for piece, square in moves:
+                temp_board = copy.deepcopy(board_state)
+                if temp_board.pieces[square.y][square.x] and temp_board.pieces[square.y][square.x].type == 'K':
+                    return -99999
+                temp_board.move_piece(temp_board.pieces[piece.y][piece.x], temp_board.squares[square.y][square.x])
+                temp_board.switch_turn()
+                eval_score = self.minimax(temp_board, depth - 1, True)
+                min_eval = min(min_eval, eval_score)
+            return min_eval
+
     def get_ai_move(self):
-        """
-        Calculate the best move for the AI player using the neural network evaluation.
+        self.nodes_evaluated = 0
+        start_time = time.time()
+        best_move, best_eval = None, float('-inf')
         
-        Returns:
-            tuple: (start_x, start_y, end_square) representing the chosen move,
-                  or None if no legal moves are available
-        """
-        best_move = None
-        best_eval = float('-inf')  # AI plays black, so maximize evaluation
+        ai_moves = self.get_all_moves("black", self.board)
         
-        # Debug print of all legal moves
-        self.print_all_legal_moves("black")
-        
-        # Consider each possible move
-        for piece, square in self.get_all_moves("black"):
-            print(f"AI is considering moving piece {piece.type} at {piece.x}, {piece.y} to square {square.x}, {square.y}")
+        for ai_piece, ai_square in ai_moves:
+            temp_board = copy.deepcopy(self.board)
+            # Prioritize king capture above all else.
+            if temp_board.pieces[ai_square.y][ai_square.x] and temp_board.pieces[ai_square.y][ai_square.x].type == "K":
+                best_move, best_eval = (ai_piece, ai_square), 99999
+                break
+
+            temp_board.move_piece(temp_board.pieces[ai_piece.y][ai_piece.x], temp_board.squares[ai_square.y][ai_square.x])
+            temp_board.switch_turn()
+            move_eval = self.minimax(temp_board, self.search_depth - 1, False)
             
-            # Debug prints for board state verification
-            print("Board tensor before backup:")
-            print(self.get_board_tensor())
+            if move_eval > best_eval:
+                best_eval, best_move = move_eval, (ai_piece, ai_square)
+        
+        elapsed = time.time() - start_time
+        if best_move:
+            piece, square = best_move
+            # To get detailed stats, re-evaluate the board state after the best move is made.
+            final_board = copy.deepcopy(self.board)
+            final_board.move_piece(final_board.pieces[piece.y][piece.x], final_board.squares[square.y][square.x])
+            _, self.last_nn_eval, self.last_material = self.evaluate_position(final_board)
 
-            # Save current board state
-            board_backup = copy.deepcopy(self.board)
-
-            print("Board tensor after backup:")
-            print(self.get_board_tensor())
-
-            # Remember original position
-            original_x = piece.x
-            original_y = piece.y
-            
-            # Try the move
-            self.board.move_piece(piece, square)
-            current_eval = self.evaluate_position()
-
-            print("Board tensor after move:")
-            print(self.get_board_tensor())
-
-            # Restore the board state
-            self.board = board_backup
-
-            print("Board tensor after restore:")
-            print(self.get_board_tensor())
-
-            # Update best move if this is the highest scoring position
-            if current_eval > best_eval:
-                best_eval = current_eval
-                best_move = (original_x, original_y, square)
-                print(f"!!!!AI found a better move: {piece.type} at ({original_x}, {original_y}) to ({square.x}, {square.y})")
-
+            self.last_move = f"Black: {piece.type} to ({square.x},{square.y})"
+            self.last_eval = best_eval
+        else:
+            self.last_move = "Black: No legal moves"
+        
+        self.last_think_time = elapsed
+        print(f"AI chose: {self.last_move} | Eval: {best_eval:.1f} | Nodes: {self.nodes_evaluated:,} | Time: {elapsed:.2f}s")
         return best_move
 
+    def handle_controls(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for button in self.depth_buttons:
+                if button['rect'].collidepoint(event.pos):
+                    self.search_depth = button['value']
+                    print(f"Search depth set to: {self.search_depth}")
+            for button in self.nn_buttons:
+                if button['rect'].collidepoint(event.pos):
+                    self.nn_weight = button['value']
+                    print(f"Neural Network weight set to: {self.nn_weight:.0%}")
+
     def update(self):
-        """
-        Update game state and handle AI moves when it's the AI's turn.
-        Manages the AI thinking state and move execution.
-        """
-        # Check if it's AI's turn and AI isn't already thinking
-        if self.board.turn == "black" and not self.thinking:
+        if self.board.turn == "black" and not self.thinking and self.board.state == "running":
             self.thinking = True
-            
-            # Calculate AI's move
-            best_move = self.get_ai_move()
-            
-            # If a move was found, execute it
-            if best_move:
-                piecex, piecey, square = best_move
-                piece = self.board.pieces[piecey][piecex]
-
-                if piece is None:
-                    # Fallback to random move if something went wrong
-                    all_moves = self.get_all_moves("black")
-                    if all_moves:
-                        piece, square = all_moves[random.randint(0, len(all_moves) - 1)]
-                        piecex, piecey = piece.x, piece.y
-                    else:
-                        print("No valid moves found for AI.")
-                        self.thinking = False
-                        return
-
-                print(f"The piece coords and square are {piece.x}, {piece.y}, {square.x}, {square.y}")
-                
-                # Execute the move if it's valid
-                if self.board.is_valid_move(piece, square):
-                    print(f"AI moves {piece.type} from ({piecex}, {piecey}) to ({square.x}, {square.y})")
-                    self.board.move_piece(piece, square)
-                    self.board.switch_turn()
-                else:
-                    print(f"Error: AI tried to make an invalid move, {piece.type} at ({piece.x}, {piece.y}) to ({square.x}, {square.y})")
-            else:
-                print("AI found no move to make.")
-            
+            pygame.display.flip() # Show "thinking" overlay before blocking
+            move = self.get_ai_move()
+            if move:
+                piece, square = move
+                self.board.move_piece(self.board.pieces[piece.y][piece.x], square)
+                if self.board.is_game_over(): self.board.state = "Black wins!"
+                else: self.board.switch_turn()
+            else: # AI has no moves
+                self.board.state = "Stalemate!"
             self.thinking = False
-
-        # Update the board state
         self.board.update()
 
-    def draw(self):
-        """
-        Draw the game state, including the board and AI thinking indicator.
-        """
-        # Draw the chess board
-        self.board.draw()
+    def draw_status(self):
+        y_offset = WINDOW_WIDTH
+        pygame.draw.rect(window, BLACK, (0, y_offset, WINDOW_WIDTH, STATUS_HEIGHT))
         
-        # If AI is thinking, show an overlay with "thinking" message
-        if self.thinking:
-            # Create semi-transparent overlay
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
-            overlay.fill((128, 128, 128))
-            overlay.set_alpha(128)
-            window.blit(overlay, (0, 0))
+        turn_text = small_font.render(f"{self.board.turn.capitalize()}'s Turn", True, WHITE)
+        window.blit(turn_text, (10, y_offset + 5))
+        
+        move_text = small_font.render(f"| {self.last_move}", True, GREEN)
+        window.blit(move_text, (130, y_offset + 5))
+        
+        if self.board.state != "running":
+            status_text = small_font.render(f"| {self.board.state}", True, RED)
+            window.blit(status_text, (400, y_offset + 5))
+
+        # Draw UI buttons
+        for button in self.depth_buttons:
+            is_selected = (button['value'] == self.search_depth)
+            color = YELLOW if is_selected else GRAY
+            pygame.draw.rect(window, color, button['rect'])
+            pygame.draw.rect(window, WHITE, button['rect'], 2)
+            label = small_font.render(button['label'], True, BLACK)
+            window.blit(label, label.get_rect(center=button['rect'].center))
             
-            # Draw "thinking" text
-            text = font.render("AI is thinking...", True, BLACK)
-            text_rect = text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2))
-            window.blit(text, text_rect)
+        for button in self.nn_buttons:
+            is_selected = (button['value'] == self.nn_weight)
+            color = YELLOW if is_selected else GRAY
+            pygame.draw.rect(window, color, button['rect'])
+            pygame.draw.rect(window, WHITE, button['rect'], 2)
+            label = small_font.render(button['label'], True, BLACK)
+            window.blit(label, label.get_rect(center=button['rect'].center))
+
+        depth_label = small_font.render("Depth:", True, WHITE)
+        window.blit(depth_label, (10, y_offset + 40))
+        
+        # Display the full "Neural Network Weight" label, moved left to fit
+        nn_label = small_font.render("Neural Network Weight:", True, WHITE)
+        window.blit(nn_label, (220, y_offset + 40))
+        
+        stats_text = small_font.render(f"Eval: {self.last_eval:.0f} (NN:{self.last_nn_eval:.0f} Mat:{self.last_material:.0f}) | {self.last_think_time:.1f}s | {self.nodes_evaluated:,} nodes", True, BLUE)
+        window.blit(stats_text, (10, y_offset + 73))
+
+    def draw(self):
+        self.board.draw()
+        self.draw_status()
+        
+        if self.thinking:
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_WIDTH), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            window.blit(overlay, (0, 0))
+            text = font.render("AI is thinking...", True, WHITE)
+            window.blit(text, text.get_rect(center=(WINDOW_WIDTH / 2, WINDOW_WIDTH / 2)))
 
 def main():
-    """
-    Main game loop. Initializes the game and runs the primary game cycle.
-    Handles game events and maintains the frame rate.
-    """
     game = AIChessGame()
     running = True
     
+    print("\n=== CONTROLS ===\n"
+          "Click the buttons to adjust AI depth and Neural Network weight.\n"
+          f"Current settings: Depth={game.search_depth}, NN Weight={game.nn_weight:.0%}\n"
+          "================\n")
+    
     while running:
-        # Handle quit event
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-
-        # Update game state and redraw
+            game.handle_controls(event)
+        
         game.update()
         game.draw()
         pygame.display.flip()
-        clock.tick(60)  # Limit frame rate to 60 FPS
-
+        clock.tick(60)
+    
     pygame.quit()
 
 if __name__ == "__main__":
