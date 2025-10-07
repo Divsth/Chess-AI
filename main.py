@@ -42,7 +42,7 @@ piece_images = {}
 def load_piece_images():
     """
     Loads piece images from the 'pieces-basic-png' folder.
-    Chess piece icons downloaded from http://greenchess.net/pieces.html
+    Chess piece icons downloaded from https://greenchess.net/info.php?item=downloads. Thank you!
     """
     pieces = ['king', 'queen', 'rook', 'bishop', 'knight', 'pawn']
     colors = ['white', 'black']
