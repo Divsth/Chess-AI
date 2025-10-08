@@ -22,6 +22,7 @@ STATUS_HEIGHT = 100
 WINDOW_HEIGHT = WINDOW_WIDTH + STATUS_HEIGHT
 
 # --- Game Logic Constants ---
+MAX_THINK_TIME = 2.0 # Seconds for Time Limit mode
 BOARD_LAYOUT = [
     ["r", "n", "b", "q", "k", "b", "n", "r"],
     ["p", "p", "p", "p", "p", "p", "p", "p"],
@@ -212,13 +213,15 @@ class AIChessGame:
         self.model = load_model()
         self.thinking = False
         self.search_depth = 2
-        self.nn_weight = 0.25 # 0.0 = pure material, 1.0 = pure neural net
+        self.nn_weight = 0.25
+        self.time_limit_active = False # New flag for time-based search
         self.nodes_evaluated = 0
         self.last_move = "Game started"
         self.last_eval = 0.0
         self.last_material = 0.0
         self.last_nn_eval = 0.0
         self.last_think_time = 0.0
+        self.search_stop_time = float('inf') # For time limiting
         self.create_ui_buttons()
     
     def create_ui_buttons(self):
@@ -231,10 +234,13 @@ class AIChessGame:
         self.nn_buttons = []
         weights = [0.0, 0.25, 0.5, 0.75, 1.0]
         labels = ["0%", "25%", "50%", "75%", "100%"]
-        # Position buttons for the longer "Neural Network Weight" label
-        start_x = 400 
+        start_x_nn = 360 # Adjusted for more space
         for i, (weight, label) in enumerate(zip(weights, labels)):
-            self.nn_buttons.append({'rect': pygame.Rect(start_x + i * 45, y_offset, 40, 30), 'value': weight, 'label': label})
+            self.nn_buttons.append({'rect': pygame.Rect(start_x_nn + i * 45, y_offset, 40, 30), 'value': weight, 'label': label})
+            
+        # Time Limit Toggle Button
+        self.time_limit_button = {'rect': pygame.Rect(20, y_offset + 33, 110, 30)}
+        
 
     def get_material_value(self, piece_type):
         return {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 0}.get(piece_type, 0)
@@ -299,14 +305,17 @@ class AIChessGame:
                                 moves.append((piece, square))
         return moves
 
-    # --- Minimax with Alpha-Beta Pruning ---
     def minimax(self, board_state, depth, alpha, beta, is_maximizing_player):
+        # Check time limit at the start of a new search depth
+        if self.time_limit_active and time.time() >= self.search_stop_time:
+            raise TimeoutError 
+
         self.nodes_evaluated += 1
         if depth == 0 or board_state.is_game_over():
             return self.evaluate_position(board_state)[0]
         
         moves = self.get_all_moves(board_state.turn, board_state)
-        if not moves: # Stalemate or checkmate
+        if not moves:
             return self.evaluate_position(board_state)[0]
         
         if is_maximizing_player:
@@ -314,7 +323,7 @@ class AIChessGame:
             for piece, square in moves:
                 temp_board = copy.deepcopy(board_state)
                 if temp_board.pieces[square.y][square.x] and temp_board.pieces[square.y][square.x].type == 'K':
-                    return 99999 # Terminal win state
+                    return 99999
                     
                 temp_board.move_piece(temp_board.pieces[piece.y][piece.x], temp_board.squares[square.y][square.x])
                 temp_board.switch_turn()
@@ -323,15 +332,15 @@ class AIChessGame:
                 
                 max_eval = max(max_eval, eval_score)
                 alpha = max(alpha, max_eval)
-                if beta <= alpha: # Alpha-Beta Pruning
+                if beta <= alpha:
                     break 
             return max_eval
-        else: # Minimizing player
+        else:
             min_eval = float('inf')
             for piece, square in moves:
                 temp_board = copy.deepcopy(board_state)
                 if temp_board.pieces[square.y][square.x] and temp_board.pieces[square.y][square.x].type == 'K':
-                    return -99999 # Terminal loss state
+                    return -99999
                     
                 temp_board.move_piece(temp_board.pieces[piece.y][piece.x], temp_board.squares[square.y][square.x])
                 temp_board.switch_turn()
@@ -340,65 +349,115 @@ class AIChessGame:
                 
                 min_eval = min(min_eval, eval_score)
                 beta = min(beta, min_eval)
-                if beta <= alpha: # Alpha-Beta Pruning
+                if beta <= alpha:
                     break 
             return min_eval
-    # --- End Minimax with Alpha-Beta Pruning ---
 
-    def get_ai_move(self):
-        self.nodes_evaluated = 0
-        start_time = time.time()
+    def run_minimax_search(self, depth, ai_moves):
+        """Runs the search for a specific depth and returns (best_move, best_eval) or raises TimeoutError."""
         best_move, best_eval = None, float('-inf')
-        
-        alpha = float('-inf')
-        beta = float('inf')
-        
-        ai_moves = self.get_all_moves("black", self.board)
+        alpha, beta = float('-inf'), float('inf')
         
         for ai_piece, ai_square in ai_moves:
             temp_board = copy.deepcopy(self.board)
             if temp_board.pieces[ai_square.y][ai_square.x] and temp_board.pieces[ai_square.y][ai_square.x].type == "K":
-                best_move, best_eval = (ai_piece, ai_square), 99999
-                break
+                return (ai_piece, ai_square), 99999
 
             temp_board.move_piece(temp_board.pieces[ai_piece.y][ai_piece.x], temp_board.squares[ai_square.y][ai_square.x])
             temp_board.switch_turn()
             
-            move_eval = self.minimax(temp_board, self.search_depth - 1, alpha, beta, False) 
+            move_eval = self.minimax(temp_board, depth - 1, alpha, beta, False) 
             
             if move_eval > best_eval:
                 best_eval, best_move = move_eval, (ai_piece, ai_square)
             
-            alpha = max(alpha, best_eval) 
+            alpha = max(alpha, best_eval)
             
-        elapsed = time.time() - start_time
-        if best_move:
-            piece, square = best_move
-            
-            # Re-evaluate the final board state to get NN/Material breakdown
-            final_board = copy.deepcopy(self.board)
-            final_board.move_piece(final_board.pieces[piece.y][piece.x], final_board.squares[square.y][square.x])
-            final_board.turn = 'white' # Set turn to White as the AI just moved
-            _, self.last_nn_eval, self.last_material = self.evaluate_position(final_board)
-            self.last_move = f"Black: {piece.type} to ({square.x},{square.y})"
-            self.last_eval = best_eval 
-        else:
-            self.last_move = "Black: No legal moves"
+        return best_move, best_eval
+
+    def get_ai_move(self):
+        self.nodes_evaluated = 0
+        start_time = time.time()
+        ai_moves = self.get_all_moves("black", self.board)
         
+        if not ai_moves:
+            self.last_move = "Black: No legal moves"
+            return None
+        
+        # Check for immediate king capture (not checked in minimax loop to save time)
+        for ai_piece, ai_square in ai_moves:
+             if self.board.pieces[ai_square.y][ai_square.x] and self.board.pieces[ai_square.y][ai_square.x].type == "K":
+                self.last_move = f"Black: {ai_piece.type} to ({ai_square.x},{ai_square.y})"
+                self.last_eval = 99999
+                return (ai_piece, ai_square)
+                
+        # --- Search Logic ---
+        best_move_at_any_depth = ai_moves[0], self.evaluate_position(self.board)[0] # Default to current position eval if search is too quick
+        max_depth_to_search = self.search_depth if not self.time_limit_active else 99 
+        
+        if self.time_limit_active:
+            self.search_stop_time = start_time + MAX_THINK_TIME
+        
+        for current_depth in range(1, max_depth_to_search + 1):
+            if self.time_limit_active and time.time() >= self.search_stop_time:
+                break
+            
+            try:
+                # Store node count before starting search for this depth
+                nodes_before_depth = self.nodes_evaluated
+                
+                # Run search
+                current_best_move, current_best_eval = self.run_minimax_search(current_depth, ai_moves)
+                
+                # If a full depth was completed, update the best move
+                best_move_at_any_depth = current_best_move, current_best_eval
+                print(f"| Depth {current_depth} completed. Eval: {current_best_eval:.1f} | Nodes added: {self.nodes_evaluated - nodes_before_depth:,}")
+                
+            except TimeoutError:
+                print(f"| Timeout reached. Stopping search at Depth {current_depth}.")
+                break
+            except Exception as e:
+                # Handle unexpected errors, but don't stop the AI from making a move
+                print(f"| Search error at Depth {current_depth}: {e}")
+                break
+
+        # --- Post-Search Updates ---
+        elapsed = time.time() - start_time
+        piece, square = best_move_at_any_depth[0]
+        
+        # Re-evaluate the final board state for stats
+        final_board = copy.deepcopy(self.board)
+        final_board.move_piece(final_board.pieces[piece.y][piece.x], final_board.squares[square.y][square.x])
+        final_board.turn = 'white'
+        _, self.last_nn_eval, self.last_material = self.evaluate_position(final_board)
+
+        self.last_move = f"Black: {piece.type} to ({square.x},{square.y}) (D={current_depth-1})"
+        self.last_eval = best_move_at_any_depth[1]
         self.last_think_time = elapsed
-        print(f"AI chose: {self.last_move} | Eval: {best_eval:.1f} | Nodes: {self.nodes_evaluated:,} | Time: {elapsed:.2f}s")
-        return best_move
+        
+        print(f"AI chose: {self.last_move} | Eval: {self.last_eval:.1f} | Nodes: {self.nodes_evaluated:,} | Time: {elapsed:.2f}s")
+        return best_move_at_any_depth[0]
+
 
     def handle_controls(self, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Depth buttons
             for button in self.depth_buttons:
-                if button['rect'].collidepoint(event.pos):
+                if not self.time_limit_active and button['rect'].collidepoint(event.pos):
                     self.search_depth = button['value']
                     print(f"Search depth set to: {self.search_depth}")
+            # NN Weight buttons
             for button in self.nn_buttons:
                 if button['rect'].collidepoint(event.pos):
                     self.nn_weight = button['value']
                     print(f"Neural Network weight set to: {self.nn_weight:.0%}")
+            # Time Limit Toggle
+            if self.time_limit_button['rect'].collidepoint(event.pos):
+                self.time_limit_active = not self.time_limit_active
+                print(f"Time Limit Mode {'ACTIVATED' if self.time_limit_active else 'DEACTIVATED'}. Max time: {MAX_THINK_TIME}s")
+                if self.time_limit_active:
+                    print("Depth controls are disabled in Time Limit Mode.")
+
 
     def update(self):
         if self.board.turn == "black" and not self.thinking and self.board.state == "running":
@@ -410,7 +469,7 @@ class AIChessGame:
                 self.board.move_piece(self.board.pieces[piece.y][piece.x], square)
                 if self.board.is_game_over(): self.board.state = "Black wins!"
                 else: self.board.switch_turn()
-            else: # AI has no moves
+            else:
                 self.board.state = "Stalemate!"
             self.thinking = False
         self.board.update()
@@ -429,15 +488,20 @@ class AIChessGame:
             status_text = small_font.render(f"| {self.board.state}", True, RED)
             window.blit(status_text, (400, y_offset + 5))
 
-        # Draw UI buttons
+        # Draw UI buttons: Depth
+        depth_label = small_font.render("Depth:", True, WHITE)
+        window.blit(depth_label, (10, y_offset + 40))
         for button in self.depth_buttons:
-            is_selected = (button['value'] == self.search_depth)
-            color = YELLOW if is_selected else GRAY
+            is_selected = (button['value'] == self.search_depth) and not self.time_limit_active
+            color = YELLOW if is_selected else RED if self.time_limit_active else GRAY
             pygame.draw.rect(window, color, button['rect'])
             pygame.draw.rect(window, WHITE, button['rect'], 2)
             label = small_font.render(button['label'], True, BLACK)
             window.blit(label, label.get_rect(center=button['rect'].center))
             
+        # Draw UI buttons: NN Weight
+        nn_label = small_font.render("NN Weight:", True, WHITE)
+        window.blit(nn_label, (280, y_offset + 40))
         for button in self.nn_buttons:
             is_selected = (button['value'] == self.nn_weight)
             color = YELLOW if is_selected else GRAY
@@ -446,15 +510,16 @@ class AIChessGame:
             label = small_font.render(button['label'], True, BLACK)
             window.blit(label, label.get_rect(center=button['rect'].center))
 
-        depth_label = small_font.render("Depth:", True, WHITE)
-        window.blit(depth_label, (10, y_offset + 40))
-        
-        # Display the full "Neural Network Weight" label, moved left to fit
-        nn_label = small_font.render("Neural Network Weight:", True, WHITE)
-        window.blit(nn_label, (220, y_offset + 40))
+        # Draw UI button: Time Limit Toggle
+        time_label_text = f"Time Limit ({MAX_THINK_TIME}s)"
+        time_label = small_font.render(time_label_text, True, WHITE)
+        color = GREEN if self.time_limit_active else GRAY
+        pygame.draw.rect(window, color, self.time_limit_button['rect'])
+        pygame.draw.rect(window, WHITE, self.time_limit_button['rect'], 2)
+        window.blit(time_label, time_label.get_rect(center=self.time_limit_button['rect'].center))
         
         stats_text = small_font.render(f"Eval: {self.last_eval:.0f} (NN:{self.last_nn_eval:.0f} Mat:{self.last_material:.0f}) | {self.last_think_time:.1f}s | {self.nodes_evaluated:,} nodes", True, BLUE)
-        window.blit(stats_text, (10, y_offset + 73))
+        window.blit(stats_text, (140, y_offset + 73))
 
     def draw(self):
         self.board.draw()
@@ -472,8 +537,8 @@ def main():
     running = True
     
     print("\n=== CONTROLS ===\n"
-          "Click the buttons to adjust AI depth and Neural Network weight.\n"
-          f"Current settings: Depth={game.search_depth}, NN Weight={game.nn_weight:.0%}\n"
+          "Click the buttons to adjust AI depth, NN weight, or toggle Time Limit.\n"
+          f"Current settings: Depth={game.search_depth}, NN Weight={game.nn_weight:.0%}, Time Limit={'ON' if game.time_limit_active else 'OFF'}\n"
           "================\n")
     
     while running:
