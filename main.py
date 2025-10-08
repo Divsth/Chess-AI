@@ -42,7 +42,7 @@ piece_images = {}
 def load_piece_images():
     """
     Loads piece images from the 'pieces-basic-png' folder.
-    Chess piece icons downloaded from https://greenchess.net/info.php?item=downloads. Thank you!
+    Chess piece icons downloaded from https://greenchess.net/info.php?item=downloads.
     """
     pieces = ['king', 'queen', 'rook', 'bishop', 'knight', 'pawn']
     colors = ['white', 'black']
@@ -212,7 +212,7 @@ class AIChessGame:
         self.model = load_model()
         self.thinking = False
         self.search_depth = 2
-        self.nn_weight = 0.5 # 0.0 = pure material, 1.0 = pure neural net
+        self.nn_weight = 0.25 # 0.0 = pure material, 1.0 = pure neural net
         self.nodes_evaluated = 0
         self.last_move = "Game started"
         self.last_eval = 0.0
@@ -299,7 +299,8 @@ class AIChessGame:
                                 moves.append((piece, square))
         return moves
 
-    def minimax(self, board_state, depth, is_maximizing_player):
+    # --- Minimax with Alpha-Beta Pruning ---
+    def minimax(self, board_state, depth, alpha, beta, is_maximizing_player):
         self.nodes_evaluated += 1
         if depth == 0 or board_state.is_game_over():
             return self.evaluate_position(board_state)[0]
@@ -312,57 +313,75 @@ class AIChessGame:
             max_eval = float('-inf')
             for piece, square in moves:
                 temp_board = copy.deepcopy(board_state)
-                # King capture is an instant win, prioritize it.
                 if temp_board.pieces[square.y][square.x] and temp_board.pieces[square.y][square.x].type == 'K':
-                    return 99999
+                    return 99999 # Terminal win state
+                    
                 temp_board.move_piece(temp_board.pieces[piece.y][piece.x], temp_board.squares[square.y][square.x])
                 temp_board.switch_turn()
-                eval_score = self.minimax(temp_board, depth - 1, False)
+                
+                eval_score = self.minimax(temp_board, depth - 1, alpha, beta, False) 
+                
                 max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, max_eval)
+                if beta <= alpha: # Alpha-Beta Pruning
+                    break 
             return max_eval
         else: # Minimizing player
             min_eval = float('inf')
             for piece, square in moves:
                 temp_board = copy.deepcopy(board_state)
                 if temp_board.pieces[square.y][square.x] and temp_board.pieces[square.y][square.x].type == 'K':
-                    return -99999
+                    return -99999 # Terminal loss state
+                    
                 temp_board.move_piece(temp_board.pieces[piece.y][piece.x], temp_board.squares[square.y][square.x])
                 temp_board.switch_turn()
-                eval_score = self.minimax(temp_board, depth - 1, True)
+                
+                eval_score = self.minimax(temp_board, depth - 1, alpha, beta, True)
+                
                 min_eval = min(min_eval, eval_score)
+                beta = min(beta, min_eval)
+                if beta <= alpha: # Alpha-Beta Pruning
+                    break 
             return min_eval
+    # --- End Minimax with Alpha-Beta Pruning ---
 
     def get_ai_move(self):
         self.nodes_evaluated = 0
         start_time = time.time()
         best_move, best_eval = None, float('-inf')
         
+        alpha = float('-inf')
+        beta = float('inf')
+        
         ai_moves = self.get_all_moves("black", self.board)
         
         for ai_piece, ai_square in ai_moves:
             temp_board = copy.deepcopy(self.board)
-            # Prioritize king capture above all else.
             if temp_board.pieces[ai_square.y][ai_square.x] and temp_board.pieces[ai_square.y][ai_square.x].type == "K":
                 best_move, best_eval = (ai_piece, ai_square), 99999
                 break
 
             temp_board.move_piece(temp_board.pieces[ai_piece.y][ai_piece.x], temp_board.squares[ai_square.y][ai_square.x])
             temp_board.switch_turn()
-            move_eval = self.minimax(temp_board, self.search_depth - 1, False)
+            
+            move_eval = self.minimax(temp_board, self.search_depth - 1, alpha, beta, False) 
             
             if move_eval > best_eval:
                 best_eval, best_move = move_eval, (ai_piece, ai_square)
-        
+            
+            alpha = max(alpha, best_eval) 
+            
         elapsed = time.time() - start_time
         if best_move:
             piece, square = best_move
-            # To get detailed stats, re-evaluate the board state after the best move is made.
+            
+            # Re-evaluate the final board state to get NN/Material breakdown
             final_board = copy.deepcopy(self.board)
             final_board.move_piece(final_board.pieces[piece.y][piece.x], final_board.squares[square.y][square.x])
+            final_board.turn = 'white' # Set turn to White as the AI just moved
             _, self.last_nn_eval, self.last_material = self.evaluate_position(final_board)
-
             self.last_move = f"Black: {piece.type} to ({square.x},{square.y})"
-            self.last_eval = best_eval
+            self.last_eval = best_eval 
         else:
             self.last_move = "Black: No legal moves"
         
@@ -384,7 +403,7 @@ class AIChessGame:
     def update(self):
         if self.board.turn == "black" and not self.thinking and self.board.state == "running":
             self.thinking = True
-            pygame.display.flip() # Show "thinking" overlay before blocking
+            pygame.display.flip()
             move = self.get_ai_move()
             if move:
                 piece, square = move
